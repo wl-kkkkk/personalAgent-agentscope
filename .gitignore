@@ -1,0 +1,26 @@
+### Maven ###
+target/
+
+### IntelliJ IDEA ###
+.idea/
+*.iml
+*.iws
+*.ipr
+
+### VS Code ###
+.vscode/
+
+### 运行期生成的知识文档 ###
+knowledge/
+
+### 本地私密配置：真实密钥只放这里，不进仓库 ###
+.env.local
+application-local.yml
+application-local.yaml
+**/application-local.yml
+
+### 日志与系统文件 ###
+logs/
+*.log
+.DS_Store
+Thumbs.db

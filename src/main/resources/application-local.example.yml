@@ -1,0 +1,8 @@
+# 复制成 application-local.yml 后填入自己的值（application-local.yml 不进仓库）
+spring:
+  datasource:
+    password: your-mysql-password
+
+app:
+  dashscope:
+    api-key: your-dashscope-api-key

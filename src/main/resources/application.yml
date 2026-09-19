@@ -1,0 +1,49 @@
+server:
+  port: 8082
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+spring:
+  application:
+    name: personalAgent-agentscope
+  # 私密配置（真实密钥/密码）单独放 application-local.yml，该文件已被 .gitignore 排除。
+  # optional 前缀保证刚克隆下来、还没建这个文件时也能正常构建和启动。
+  # 想用环境变量覆盖也可以：环境变量优先级高于文件，${DASHSCOPE_API_KEY} 依然有效。
+  config:
+    import: optional:classpath:application-local.yml
+  datasource:
+    url: ${AGENT_DB_URL:jdbc:mysql://192.168.141.129:3306/personalagent?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${AGENT_DB_USER:myuser}
+    password: ${AGENT_DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+app:
+  dashscope:
+    api-key: ${DASHSCOPE_API_KEY}
+    model: qwen-max
+    # 联网搜索专用模型（建议用 qwen-plus，搜索增强更稳定）
+    search-model: ${DASHSCOPE_SEARCH_MODEL:qwen-plus}
+    # 联网搜索专用端点（留空则使用 DashScope 原生端点，不要用 compatible-mode 地址）
+    search-base-url: ${DASHSCOPE_SEARCH_BASE_URL:}
+    # 查询改写专用（每次提问都会调用一次，用轻量快模型）
+    rewrite-model: ${QWEN_REWRITE_MODEL:qwen3.8-flash}
+    # 会话标题生成专用
+    title-model: ${QWEN_TITLE_MODEL:qwen3.8-flash}
+  rag:
+    mcp-url: ${RAG_MCP_URL:http://localhost:8080/api/mcp}
+  knowledge:
+    dir: ./knowledge/web
+
+# 登录鉴权（与 personalrag 一致的配置；默认用内存存 token，不依赖 Redis）
+sa-token:
+  token-name: satoken
+  timeout: 2592000
+  active-timeout: -1
+  is-concurrent: true
+  is-share: true
+  token-style: uuid
+  is-log: false
+  is-read-cookie: true
+  is-read-header: true
