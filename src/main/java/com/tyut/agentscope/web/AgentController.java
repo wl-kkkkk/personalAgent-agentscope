@@ -45,7 +45,7 @@ public class AgentController {
             verifyUser(request.userId(), user.userId());
             AgentResponse response = chatService.chat(
                     user.userId(), user.nickname(), user.rootFolder(),
-                    request.sessionId(), request.query());
+                    request.sessionId(), request.query(), request.forceRoute());
             return ApiResponse.ok(response);
         } catch (IllegalArgumentException e) {
             log.warn("对话参数不合法: {}", e.getMessage());
@@ -75,7 +75,8 @@ public class AgentController {
         try {
             LoginUserVO user = authService.currentUser();
             AgentResponse response = hitlService.approve(
-                    request.taskId(), request.approved(), request.note(), user.userId());
+                    request.taskId(), request.approved(), request.note(),
+                    request.keywords(), user.userId());
             return ApiResponse.ok(response);
         } catch (IllegalArgumentException e) {
             log.warn("审批失败: {}", e.getMessage());
@@ -95,6 +96,6 @@ public class AgentController {
         LoginUserVO user = authService.currentUser();
         verifyUser(request.userId(), user.userId());
         return chatService.streamChat(user.userId(), user.nickname(),
-                user.rootFolder(), request.sessionId(), request.query());
+                user.rootFolder(), request.sessionId(), request.query(), request.forceRoute());
     }
 }

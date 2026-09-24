@@ -239,7 +239,61 @@
         .approval-card .desc { font-size: 12px; color: #666; margin-bottom: 12px; line-height: 1.6; }
         .approval-card .row { display: flex; gap: 8px; }
 
+        /* 审批卡片里的关键词勾选区 */
+        .kw-block { margin-bottom: 12px; }
+
+        .kw-block .kw-label { font-size: 12px; color: #666; margin-bottom: 6px; }
+
+        .kw-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+
+        .kw-chip {
+            display: inline-flex; align-items: center; gap: 5px;
+            border: 1px solid #e6e6e6; background: #fff; border-radius: 999px;
+            padding: 3px 10px; font-size: 12px; cursor: pointer; user-select: none;
+        }
+
+        .kw-chip.is-new { border-color: #d6e4ff; background: #f5f9ff; }
+
+        .kw-chip input { margin: 0; cursor: pointer; }
+
+        .kw-chip em {
+            font-style: normal; font-size: 10px; color: #999;
+            background: #f2f2f2; border-radius: 4px; padding: 1px 4px;
+        }
+
+        .kw-chip.is-new em { color: #3a6fd8; background: #e6efff; }
+
+        .kw-add {
+            width: 100%; box-sizing: border-box; border: 1px dashed #ddd;
+            border-radius: 8px; padding: 6px 10px; font-size: 12px;
+            font-family: inherit; outline: none;
+        }
+
+        .kw-add:focus { border-color: #bbb; }
+
         .chat-input-wrap { flex-shrink: 0; margin-top: 12px; }
+
+        /* 检索路径开关：自动 = 交给意图识别，另外两个是用户强制 */
+        .route-bar {
+            display: flex; align-items: center; gap: 10px;
+            padding: 0 4px 8px;
+        }
+
+        .route-bar .route-label { font-size: 12px; color: #888; flex-shrink: 0; }
+
+        .route-group { display: flex; gap: 6px; }
+
+        .route-btn {
+            border: 1px solid #e6e6e6; background: #fff; color: #666;
+            font-size: 12px; font-family: inherit; padding: 4px 10px;
+            border-radius: 999px; cursor: pointer; transition: all .15s;
+        }
+
+        .route-btn:hover { border-color: #bbb; color: #222; }
+
+        .route-btn.active {
+            background: #000; border-color: #000; color: #fff; font-weight: 600;
+        }
 
         .chat-input-box {
             display: flex; align-items: flex-end; gap: 10px;
@@ -409,6 +463,14 @@
                     </div>
                 </div>
                 <div class="chat-input-wrap">
+                    <div class="route-bar">
+                        <span class="route-label">检索路径</span>
+                        <div class="route-group" id="routeGroup">
+                            <button class="route-btn active" data-route="">自动判断</button>
+                            <button class="route-btn" data-route="rag">只查知识库</button>
+                            <button class="route-btn" data-route="web">强制联网</button>
+                        </div>
+                    </div>
                     <div class="chat-input-box">
                         <textarea id="chatInput" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
                         <button class="send-btn" id="sendBtn">发送</button>
@@ -506,7 +568,8 @@
         sessionTitle: null,
         rootFolder: null,
         files: [],
-        currentFileId: null
+        currentFileId: null,
+        forceRoute: ''     // '' 自动判断 / 'rag' 只查知识库 / 'web' 强制联网
     };
 
     const $ = id => document.getElementById(id);
@@ -847,16 +910,50 @@
                 handleApprove(btn.dataset.taskId, btn.dataset.approve === 'true');
             });
         });
+        // 审批卡片里可以自己补关键词：回车就把词加成一个勾选中的标签
+        container.querySelectorAll('[data-kw-add]').forEach(input => {
+            input.addEventListener('keydown', e => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                const word = input.value.trim();
+                if (!word) return;
+                const list = container.querySelector(`[data-kw-list="${input.dataset.kwAdd}"]`);
+                if (list) {
+                    list.insertAdjacentHTML('beforeend', kwChipHtml(word, true, true));
+                }
+                input.value = '';
+            });
+        });
         container.scrollTop = container.scrollHeight;
     }
 
+    function kwChipHtml(word, isNew, checked) {
+        return `<label class="kw-chip${isNew ? ' is-new' : ''}">
+                    <input type="checkbox" value="${escHtml(word)}"${checked ? ' checked' : ''}>
+                    <span>${escHtml(word)}</span>
+                    <em>${isNew ? '新增' : '已有'}</em>
+                </label>`;
+    }
+
     function approvalCard(task, idx) {
+        const keywords = task.keywords || [];
+        const existing = new Set((task.existingKeywords || []).map(w => w.toLowerCase()));
+        const kwBlock = keywords.length ? `
+                    <div class="kw-block">
+                        <div class="kw-label">这篇文档提炼出的关键词（勾选的要写入你的关键词词表，可自行增删）</div>
+                        <div class="kw-list" data-kw-list="${escHtml(task.taskId)}">
+                            ${keywords.map(w => kwChipHtml(w, !existing.has(w.toLowerCase()), true)).join('')}
+                        </div>
+                        <input class="kw-add" data-kw-add="${escHtml(task.taskId)}"
+                               placeholder="想补一个词？输入后回车（比如 AI、缓存）">
+                    </div>` : '';
         return `<div class="approval-card">
                     <div class="title">需要人工审批</div>
                     <div class="desc">
                         模型想调用 <b>${escHtml(task.toolName || '上传工具')}</b> 把整理好的知识写入知识库。<br>
                         批准后会真的执行上传；拒绝则只保留本地文档。
                     </div>
+                    ${kwBlock}
                     <div class="row">
                         <button class="btn-solid" data-approve="true" data-task-id="${escHtml(task.taskId)}">批准上传</button>
                         <button class="btn-ghost" data-approve="false" data-task-id="${escHtml(task.taskId)}">拒绝</button>
@@ -884,7 +981,12 @@
             const res = await apiFetch('/api/agent/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId: state.userId, sessionId: state.sessionId, query: text })
+                body: JSON.stringify({
+                    userId: state.userId,
+                    sessionId: state.sessionId,
+                    query: text,
+                    forceRoute: state.forceRoute || null
+                })
             });
 
             const contentType = res.headers.get('content-type') || '';
@@ -936,7 +1038,12 @@
                         state.messages[msgIndex].text = fullText;
                         updateStreamingText(msgIndex);
                     } else if (ev.type === 'approval') {
-                        state.messages[msgIndex].task = { taskId: ev.taskId, toolName: ev.toolName };
+                        state.messages[msgIndex].task = {
+                            taskId: ev.taskId,
+                            toolName: ev.toolName,
+                            keywords: ev.keywords || [],
+                            existingKeywords: ev.existingKeywords || []
+                        };
                     } else if (ev.type === 'error') {
                         state.messages[msgIndex] = { role: 'system', text: ev.message || '处理失败' };
                         renderMessages();
@@ -977,7 +1084,17 @@
         container.scrollTop = container.scrollHeight;
     }
 
+    /** 取审批卡片上勾选的关键词；卡片上没有关键词区时返回 null（表示"没确认过"） */
+    function collectKeywords(taskId) {
+        const list = document.querySelector(`[data-kw-list="${taskId}"]`);
+        if (!list) return null;
+        return Array.from(list.querySelectorAll('input[type=checkbox]'))
+            .filter(cb => cb.checked)
+            .map(cb => cb.value);
+    }
+
     async function handleApprove(taskId, approved) {
+        const keywords = collectKeywords(taskId);
         state.messages.push({ role: 'system', text: approved ? '已批准上传，处理中…' : '已拒绝上传，处理中…' });
         renderMessages();
         const placeholderIndex = state.messages.length;
@@ -988,7 +1105,7 @@
             const res = await apiFetch('/api/agent/approve', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ taskId: taskId, approved: approved })
+                body: JSON.stringify({ taskId: taskId, approved: approved, keywords: keywords })
             });
             const data = await res.json();
             if (!data.success) {
@@ -1008,6 +1125,15 @@
     }
 
     $('sendBtn').addEventListener('click', sendMessage);
+
+    // 检索路径开关：选中哪个就把哪个传给后端，空值表示交给意图识别判断
+    $('routeGroup').querySelectorAll('.route-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            state.forceRoute = btn.dataset.route || '';
+            $('routeGroup').querySelectorAll('.route-btn').forEach(b =>
+                b.classList.toggle('active', b === btn));
+        });
+    });
 
     $('chatInput').addEventListener('keydown', e => {
         if (e.key === 'Enter' && !e.shiftKey) {

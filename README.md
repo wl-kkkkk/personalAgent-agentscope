@@ -20,6 +20,7 @@ AgentScope Java（1.0.12）版本的个人知识助手：**一切皆工具 + Ski
 - `config/AgentScopeConfig.java`：模型（`chatModel` / `webSearchModel`，后者开了 `enable_search`）、`Toolkit` 的装配（可共享的单例部分）。
 - `config/AgentMemoryFactory.java`：短期记忆工厂，构建带自动压缩/卸载的 `AutoContextMemory`。
 - `common/PromptLoader.java` / `common/ModelCaller.java`：提示词加载与模型调用，统一处理空值、超时、异常。
+- `common/StructuredModelCaller.java` / `common/JsonSupport.java`：结构化输出调用（提示词约束 + 容错 JSON 解析），对标 personalrag 里的 `.entity(Xxx.class)`。
 - `agent/KnowledgeAgentFactory.java`：**按请求**构建 agent，每次一份新 memory + 一份 `toolkit.copy()` 和对应 `SkillBox`。
 - `skill/SkillCatalog.java`：启动时加载 skill，并维护"skill → 需要哪些工具"的绑定。
 - `session/AgentSessionStore.java`：会话持久化，`MysqlSession` + `userId:sessionId` 的 key 规则。
@@ -27,16 +28,20 @@ AgentScope Java（1.0.12）版本的个人知识助手：**一切皆工具 + Ski
 - `common/StreamEvent.java`：流式对话的 SSE 事件体（session / progress / chunk / approval / done / error）。
 - `tool/QueryRewriteTools.java`：`rewrite_query`，结合历史对话改写检索查询。
 - `hook/QueryRewriteHook.java`：每次请求进入时自动改写用户问题（Hook 保证必跑，不由模型决定）。
+- `intent/*` + `hook/IntentRecognitionHook.java`：意图识别，判定这一轮走知识库还是联网，详见下面「意图识别与关键词词表」。
+- `keyword/*`：关键词词表（每个用户一张）+ 归一化（`Keywords`）+ frontmatter 读写（`Frontmatter`）。查询侧做匹配，入库侧做去重与沉淀。
 - `tool/WebSearchTools.java`：`web_search`。
-- `tool/DocumentTools.java`：`write_markdown`（保存目录由用户指定）、`extract_keywords`。
-- `tool/UploadTools.java`：`upload_document`，底层调 RAG 的 MCP 工具 `upload2Rag`。
+- `tool/DocumentTools.java`：`write_markdown`（保存目录由用户指定，关键词写进 frontmatter）。
+- `tool/KeywordTools.java`：`extract_keywords`，提炼候选词 + 与该用户词表对比，返回"已有/新增"。
+- `tool/UploadTools.java`：`upload_document`，底层调 RAG 的 MCP 工具 `upload2Rag`；`upload(...)` 返回结构化结果，供审批恢复链路判断成败。
+- `tool/PersonalKnowledgeTools.java`：`query_personal_knowledge`，包装 MCP 的 `answerByPersonalKnowledge`，为的是能用 `ToolEmitter` 上报检索进度。
 - `service/HitlService.java`：审批后的恢复逻辑（构造匹配 id 的 `ToolResultBlock` 回填）。
 - `hook/UploadApprovalHook.java`：挂在 `PostReasoningEvent` 上的 HITL 拦截点。
 - `user/*`：用户模块（controller → service → repository），Sa-Token 登录 + BCrypt 密码。
 - `library/*`：本地 Markdown 文件库（目录校验、扫描同步、按元信息读取正文）。
 - `config/SaTokenConfig.java` / `config/PasswordEncoderConfig.java`：登录拦截与密码编码。
 - `resources/static/index.html`：网页界面（登录注册 + 目录选择 + 文件列表 + Markdown 预览）。
-- `resources/prompts/*.st`：`agent-system`（智能体系统提示词）、`query-rewrite`（查询改写）。
+- `resources/prompts/*.st`：`agent-system`（智能体系统提示词）、`query-rewrite`（查询改写）、`intent-recognition`（意图识别，要求 JSON 输出）。
 - `resources/skills/<name>/SKILL.md`：`knowledge-base-qa`、`web-knowledge-capture` 两个 skill（AgentScope 约定：每个 skill 一个目录，文件名必须是 `SKILL.md`，frontmatter 含 `name` 和 `description`）。
 
 ## 跑起来
@@ -78,6 +83,10 @@ curl -c cookie.txt -X POST http://localhost:8082/user/login \
 
 curl -b cookie.txt -X POST http://localhost:8082/api/agent/ask \
   -H "Content-Type: application/json" -d '{"query":"今天有什么科技新闻"}'
+
+# 强制走某条检索路径（不传 = 交给意图识别判断）
+curl -b cookie.txt -X POST http://localhost:8082/api/agent/ask \
+  -H "Content-Type: application/json" -d '{"query":"Redis 怎么配","forceRoute":"rag"}'
 ```
 
 首次不传 `sessionId`，服务端会生成并返回；之后每轮都要**把返回的 sessionId 带回来**，否则每轮都是新会话、记不住上下文：
@@ -185,6 +194,52 @@ public String uploadDocument(
 
 用户校验在返回 `Flux` **之前**完成，所以未登录/参数错误会走普通 JSON 响应，而不是返回半个流。
 
+### 工具执行中的进度（ToolEmitter）
+
+联网检索要几十秒、关键词提炼要等一次模型调用，这期间用户原本只看得到转圈。现在工具可以主动报进度：方法上多声明一个
+`ToolEmitter` 参数（框架自动注入，不需要 `@ToolParam`，也不进工具的 schema），执行到一半 `emitter.emit(ToolResultBlock.text("..."))` 即可。
+
+```
+工具 emit(chunk)
+  → ActingChunkEvent（Hook 事件）
+  → StreamingHook 转成流式事件：TOOL_RESULT，isLast = false
+  → ChatService 按 isLast 分流：false → progress（进度提示），true → tool（工具结果，留在气泡里）
+```
+
+**框架替我们守住的那条边界**：emit 出去的片段只进 Hook 和流式事件，**不进模型上下文**——只有方法返回值才作为 tool result 交给模型。
+所以进度文案可以放心写给用户看，但也别指望用它给模型递信息（那是返回值或 HINT 事件的事）。
+
+**为什么不自己把 sink 塞进 ToolExecutionContext**：一是非流式的 `/api/agent/ask` 和审批恢复（`HitlService.approve`）根本没有 sink，
+工具里得处处判空，而框架用的是 `NoOpToolEmitter`；二是 `Flux.create` 不保证多线程写 sink 的信号串行，工具一旦在虚拟线程里并发 emit
+就会破坏 SSE 帧，而框架这条路是经 Hook 单点转发的；三是把传输层细节漏进了业务工具。
+
+目前接了 `web_search`（开始检索 / 检索完成）与 `extract_keywords`（提炼中 / 候选词与新增数量）。
+`write_markdown` 是毫秒级的，加了反而是噪音；`upload_document` 在审批前就被拦下、真正上传发生在 `/approve` 那个非流式请求里，要看到它的进度得把审批接口也改成 SSE。
+
+### MCP 检索也要报进度：包一层本地工具
+
+查知识库走的是 RAG 通过 MCP 暴露的 `answerByPersonalKnowledge`，而**远端注册进来的工具加不了参数**，也就用不上 `ToolEmitter`——可这一步恰恰是最慢的（RAG 检索 + Rerank + 生成）。
+
+解决办法是在本地包一层 `query_personal_knowledge`（`tool/PersonalKnowledgeTools.java`）：先 emit 一条「正在检索个人知识库」，再通过 MCP 客户端调后面那个工具。注册时用 `toolkit.removeTool("answerByPersonalKnowledge")` 把 MCP 直连的那个摘掉——两个功能相同的工具同时存在，模型会随机挑一个，挑中直连的就又看不到进度了。
+
+昵称仍然从 `ToolExecutionContext` 取，不让模型传：模型没有「当前用户是谁」的概念，让它传只会传错或者瞎编。
+
+### 一个静默失败：工具内容是取到了、又被丢掉了
+
+工具事件前端一个字都看不到，排查下来不是没发出来，而是**取文本的方式错了**：
+
+```java
+event.getMessage().getTextContent()   // TOOL 消息 → 永远是空串
+```
+
+`Msg.getTextContent()` 只收集 `TextBlock`，而框架给 TOOL 消息装的内容块是 `ToolResultBlock`（它是 `ContentBlock` 的子类，不是 `TextBlock` 的子类）。于是拿到空串、被 `if (text.isBlank()) return;` 整段丢掉，`TOOL_RESULT` 这个分支等于死代码。
+
+取法要再展开一层 `ToolResultBlock.getOutput()`。顺带把工具名（框架会填进 `ToolResultBlock.name`）拼到前面，前端那行才看得出是谁在跑：`web_search · 正在联网检索：xxx`。
+
+**这个坑为什么能躲过测试**：单测里图省事用 `Msg.builder().textContent("...")` 造消息，那是 TextBlock，测试全绿、线上全白。现在测试统一按框架的真实形状造（`ToolResultBlock` + `withIdAndName`）。
+
+还有一个连带的小坑：`oneLine()` 对空串有「未知错误」的兜底（那是给 error 事件用的），工具事件判空必须放在调用它之前，否则会出现 `web_search · 未知错误` 这种鬼东西。
+
 ## 记忆模块
 
 两层，都在现有骨架里接好了：
@@ -216,6 +271,10 @@ public String uploadDocument(
 
 **为什么不依赖"挂起的 tool call 一定在记忆里"**：恢复前会先检查记忆里有没有那条 assistant 消息（`PendingToolScan.containsToolUseId`）；没有的话，就用 `agent_hitl_task` 里存的 `tool_use_id` / `tool_name` / `tool_input` **重建这条消息再注入**。这条链路因此不依赖框架是否把停止时的推理消息落盘。
 
+**审批卡片顺带确认关键词**：模型调 `upload_document` 时会带上 `extract_keywords` 给的 `keywordsText`，`ChatService.emitPendingApproval` 把它与该用户的词表比一遍，随 `approval` 事件一起推给前端（`keywords` + `existingKeywords`）。前端渲染成可勾选的标签并标出"新增/已有"，用户还能自己补词；点确认时把这批词一起提交。
+
+审批通过后的落库顺序在 `HitlService.executeApprovedTool` 里：**先上传成功，再写词表**。上传失败就不动词表，避免留下"有词没文档"的脏数据；词表写入失败也不影响文档已经进库这个事实，只在返回文案里说明。`keywords` 传 null 表示"没确认过，用工具入参里的候选"，传空数组表示"用户把词全删了，这次不沉淀任何词"——两者语义不同，代码里分别处理。
+
 ## Web 界面（对话 + 文件库）
 
 页面：`http://localhost:8082/`（`resources/static/index.html`，单文件，风格与 personalrag 一致）。
@@ -242,10 +301,84 @@ public String uploadDocument(
 
 **边界处理**：目录为空/不存在/不是文件夹/无读权限都直接拒绝并提示；扫描有深度（5 层）和数量（500 个）上限，避免误选整个磁盘；读文件做**路径越权校验**（只能读当前根目录内的文件）与大小上限（2MB）；当前用户从登录态取，前端不传 userId。
 
+## 意图识别与关键词词表
+
+**为什么需要**：Agent 有两条检索路径（个人知识库 / 联网），光靠系统提示词描述"什么时候走哪条"，
+模型会飘——问自己的笔记它也去联网，问实时新闻它也翻知识库。所以把这件事从提示词里抽出来，
+做成每次必跑的 Hook + 结构化判定，和 `QueryRewriteHook` 同一个思路。
+
+### 三层设计
+
+```
+用户提问
+  └─ QueryRewriteHook（优先级 50）：先改写查询，补全指代
+        └─ IntentRecognitionHook（优先级 60，在改写之后）
+              ├─ 取该用户词表（KeywordLibrary，60s 本地缓存）
+              ├─ 一次结构化调用：{intent, route, matchedKeywords, reasoning, confidence}
+              ├─ 写进 RouteState（每请求一份，通过 ToolExecutionContext 共享给工具）
+              └─ 在用户消息末尾附一行【本轮路由】指令
+                    ├─ 工具层硬拦截：路由=知识库时 web_search 直接拒调
+                    └─ 模型层：按指令走对应 skill
+```
+
+**优先级为什么是 60**：`QueryRewriteHook` 是 50，先跑。意图识别要拿改写后的查询去匹配词表，
+否则"那个东西怎么配"这类带指代的问题匹配不上任何关键词（AgentScope 的 Hook 是值越小越先跑）。
+
+### 词表怎么参与判定
+
+提示词里带上该用户的完整词表，模型做的是**匹配**而不是**生成**：`matchedKeywords` 只能从清单里
+原样选。模型编出来的词会在 `Keywords.intersect` 里被过滤掉，所以词表始终是权威的，
+不会被模型的临时发挥污染。词表为空（新用户）也照常判，提示词里标注"词表为空"，
+退化成只看问题本身。
+
+### 降级策略（对齐 personalrag 的 QueryRouter）
+
+模型没返回可用 JSON、`route` 取值非法、置信度低于 0.5 —— 三种情况一律降级到知识库检索。
+理由是方向上不对称：知识库漏检了还能再联网，反过来白白丢掉用户已有资料。
+
+### 用户可以强制指定
+
+界面上有「自动判断 / 只查知识库 / 强制联网」三档，对应请求体的 `forceRoute`：
+`rag` / `web` / 不传。强制时**不调模型**，直接用用户的选择，省掉一次调用。
+
+### 硬拦截而不只是提示
+
+只注入提示词是不够的——ReAct 的模型有权自己决定调哪个工具。所以判定结果同时写进 `RouteState`，
+由工具层读：`web_search` 在路由为知识库时直接返回"本轮不联网"。
+只拦这一个方向：用户问自己资料时联网既浪费又容易跑偏，反过来允许查知识库反而是意外收获。
+
+### 词表接口
+
+```bash
+curl -b cookie.txt http://localhost:8082/api/keywords                      # 看词表
+curl -b cookie.txt -X POST http://localhost:8082/api/keywords \
+  -H "Content-Type: application/json" -d '{"keywords":["RAG","向量检索"]}'  # 加词（已存在的忽略）
+curl -b cookie.txt -X DELETE "http://localhost:8082/api/keywords?keyword=RAG"
+```
+
+归一化用的是 NFKC + 小写 + 去空白（`Keywords.normalize`），所以 `RAG` / `rag` / `ＲＡＧ` 在库里是同一个词，
+唯一键 `(user_id, normalized)` 挡住重复写法；匹配时也不会因为大小写不同而漏掉。
+
+### 结构化输出怎么实现的
+
+AgentScope 1.0.12 的 `Model` 接口没有 Spring AI 那样的 `.entity()`。它自己的结构化输出
+（`StructuredOutputCapableAgent`）是走临时 tool + `tool_choice` 实现的，那是给"整个 agent 的最终输出"
+用的，套在 Hook 的单次分类调用上太重。所以这里用同样的三段式：
+
+1. 提示词里写明 JSON 字段约束；
+2. `JsonSupport` 容错解析——剥掉 ```json 围栏、从第一个 `{` 开始做括号配对扫描（能正确处理字符串里的括号和转义）；
+3. 映射成 record，字段缺失由紧凑构造器兜底。
+
+`app.llm.json-mode=true` 会额外带 DashScope 的 `response_format={"type":"json_object"}`，约束更硬；
+但 DashScope 部分端点（本项目的 qwen3.8 系列走的是多模态端点）不一定吃这个参数，所以默认关闭。
+
 ## 待完善
 
 - 会话清理：每开一次新会话就多一行数据，建议按更新时间做 TTL 清理（`MysqlSession.delete/clearAllSessions/truncateAllSessions`）。
 - 审批任务的清理与幂等：目前同一 `tool_use_id` 唯一键防重，过期未审批的任务需要另做 TTL。
+- 路由指令是附在用户消息末尾进记忆的；更干净的做法是按路由收窄工具集，但当前 agent 复用共享 toolkit，暂不支持。
+- 本地 Markdown 的 frontmatter 写的是"提炼时的候选词"；用户在审批卡片上增删后，上传进 RAG 的那份会同步成最终列表，本地文件不会跟着改（两边可能不一致）。要一致的话，得让恢复链路把落盘路径也带上、审批后回写本地文件。
+- 关键词目前只参与"意图识别时的话题匹配"，还没接进 RAG 的检索（按关键词过滤/加权）。那一步要改 personalrag：`answerByPersonalKnowledge` 加可选参数 + 检索器读它。
 
 ## 已完成（本轮）
 
@@ -255,10 +388,13 @@ public String uploadDocument(
 - 联网工具不再吞异常：失败时原样带出异常类型与消息，界面工具结果行和日志都能看到。
 - `agentscope_sessions` 改用本项目所在的库（框架默认会建到名为 `agentscope` 的库里），建表语句补进 `init.sql`。
 - 网页界面加上对话：导航切换「对话 / 文件库」，消息气泡、HITL 审批卡片、`sessionId` 本地留存；`/api/agent/ask`、`/api/agent/approve` 改为从登录态取用户、返回统一响应体，并做了越权审批校验。
-- Web 界面 + 登录 + 本地 Markdown 文件库：`user/*`、`library/*`、`static/index.html`；建表脚本合并成 `docs/sql/init.sql`（建库 + `user_info` + `agent_markdown_file` + `agent_hitl_task`）。
+- Web 界面 + 登录 + 本地 Markdown 文件库：`user/*`、`library/*`、`static/index.html`；建表脚本合并成 `docs/sql/init.sql`（建库 + `user_info` + `agent_markdown_file` + `agent_hitl_task` + `agent_keyword`）。
+- **意图识别 Hook + 关键词词表**：`hook/IntentRecognitionHook`（优先级 60，在查询改写之后）拿该用户词表做结构化判定，输出 `{intent, route, matchedKeywords, reasoning, confidence}`；结果写进每请求一份的 `RouteState`，工具层据此硬拦截 `web_search`，同时附一行【本轮路由】指令给模型。词表落在 `agent_keyword` 表（NFKC 归一化 + 唯一键去重，60s 本地缓存），配 `/api/keywords` 增删查；界面加了「自动判断 / 只查知识库 / 强制联网」三档，强制时不调模型。结构化输出走 `StructuredModelCaller` + `JsonSupport`（提示词约束 + 括号配对容错解析），不依赖 AgentScope 的 agent 级 StructuredOutput。
+- **入库侧关键词链路**：`extract_keywords` 重写为"提炼 + 对比"（结构化 JSON：`candidates` / `existing` / `new` / `keywordsText`，集合运算放服务端，不让模型自己算）。`write_markdown` 多了 `keywords` 参数，写进 Markdown 的 frontmatter（只动开头那个区块，不碰正文）。`upload_document` 带上关键词，审批卡片渲染成可勾选标签、标出"新增/已有"、支持自己补词；审批通过后先上传、成功再写词表（来源标记 `upload`）。`DocumentTools` 本来塞着两个能力，这次把关键词拆成独立的 `KeywordTools`。
 - `upload_document` 接上 RAG 真实上传：底层调 MCP 工具 `upload2Rag(documentName, markdownContent)`；`upload2Rag` 同时加进 `SensitiveTools`，防止模型绕过包装工具直接调 MCP。
 - skill 绑定工具：`SkillCatalog` 维护"skill → 工具"映射，激活某个 skill 时只暴露它需要的工具。
 - 工具集改为**共享基础 toolkit**：`toolkit.copy()` 不复制 MCP 管理器、有丢工具的风险，而 skill 绑定工具组那段实际是空操作、`SkillHook` 也只注入提示词，所以复制没有收益。每个 agent 仍然各自一份 `SkillBox`。
+- **工具进度上报 + 修复工具内容不显示**：工具方法加 `ToolEmitter` 参数即可 emit 进度（框架自动注入、不进 schema、chunk 不进模型上下文），`ChatService` 按事件的 `isLast` 分流成 progress / tool 两类。同时修掉一个既有静默失败：TOOL 消息的内容块是 `ToolResultBlock`，而 `Msg.getTextContent()` 只认 `TextBlock`，工具事件因此取到空串被整段丢掉——前端从来没显示过工具调用。另外把 MCP 的 `answerByPersonalKnowledge` 摘掉、换成能报进度的本地包装工具 `query_personal_knowledge`。
 - 查询改写改为**每次必跑**：`QueryRewriteHook` 挂在 `PreCallEvent`，改写用户输入后再交给 agent；历史从 `event.getMemory()` 直接取，不用模型传参。`rewrite_query` 工具仍保留，供模型对子问题单独改写。提示词在 `resources/prompts/query-rewrite.st`。
 - 系统提示词与两个 skill 全部按统一规范重写（定位 → 策略 → 执行规则 → 示例 → 占位符）。
 - Markdown 保存目录改为用户可选（`write_markdown` 的 `outputDir` 参数，不传则用默认目录）。
@@ -277,15 +413,16 @@ public String uploadDocument(
 一句话定位：基于 AgentScope Java 1.0 的个人知识助手，用 ReAct Agent 编排工具完成「查知识库 / 联网检索并沉淀知识」，知识库能力通过 MCP 复用已有的 RAG 服务。
 
 ```
-这是我的第二个项目，一个个人知识助手 Agent。业务上就两件事：用户问自己的资料时查个人知识库，问实时信息时联网检索，并把检索到的知识整理成 Markdown 文档沉淀回知识库。
+第一个项目是一个个人知识助手 Agent，整体流程是：用户提出问题后，系统先进行查询重写和意图识别，根据用户需求选择个人知识库或者联网搜索；如果是个人知识查询，就检索已有知识，如果联网搜索，会人工审核把有价值的内容整理沉淀回知识库。
 
-我刻意用两套技术栈实现了同一个业务：一套是 AgentScope Java 的 ReAct Agent + Skill + Tool，另一套是 Spring AI Alibaba 的 StateGraph 工作流，两个模块完全独立、可以对比效果。
+知识库部分是复用我之前的 RAG 项目，没有在 Agent 里重复实现。RAG 侧主要完成文档解析、上传、父子分块、向量化、混合检索、Rerank 和 Query Router 等能力，然后通过 MCP 将知识查询和文档上传封装成工具提供给 Agent，这样 Agent 可以直接调用。
 
-知识库能力我没有重写，而是通过 MCP 协议接入上一个 RAG 项目暴露的服务，Agent 直接调用它的查询工具和上传工具，所以 RAG 那套检索、rerank、向量化都在后端复用。
 
-核心工作有三块：一是 HITL 人工审批，知识入库前必须人工确认；二是两层记忆，短期用自动压缩控制上下文、长期落 MySQL 做会话持久化；三是把流程从提示词里抽出来做成 Skill，让模型按需加载。
+在 Agent 侧，我主要做的首先是查询重写和结构化意图识别（是通过hook机制实现的），并结合关键词词表做进一步路由；然后使用 AgentScope 的渐进式披露的机制，通过 Skill 和 Tool 将不同任务拆分，让 Agent 根据任务按需加载能力。
 
-工程上还踩了一批「静默失败」的坑，比如工具链式注册会互相覆盖、工具参数没加注解导致模型瞎猜参数名、DashScope 端点选错报的却是 url error，这些我都做成了可复跑的探针测试。
+另外一个重点是 HITL，我自己基于 AgentScope 的 Hook 机制做了工具级人工审批：Agent 产生 Tool Call 后先拦截并挂起，人工确认后再恢复执行，同时把审批状态和挂起信息持久化，保证中断后可以继续运行。
+
+最后在记忆方面，按请求构建 Agent，使用 AutoContextMemory 管理短期上下文，通过 MysqlSession 持久化长期会话，避免不同会话之间出现记忆串台。
 ```
 
 ### 整体链路
@@ -304,6 +441,59 @@ public String uploadDocument(
 
 上传是敏感操作，走到这一步会挂起等人工审批，审批通过后才真正入库。
 ```
+
+### Hook 体系与自建的三个 Hook
+
+```
+AgentScope 的 Hook 是贯穿 Agent 生命周期的拦截点：所有事件都从统一的 onEvent 进来，按 priority 从小到大执行（默认 100）。
+事件分两类：带 setter 的能改内容（改输入消息、改工具入参、改工具结果），不带的就是只读通知；另外还有 stopAgent 这种打断能力。
+我按这个特点把三件事做成了 Hook，选它们的关键理由是「这件事必须每轮都发生」——交给模型当工具用，它一定会偷懒跳过。
+
+第一个是查询改写（QueryRewriteHook，优先级 50，挂 PreCallEvent）：用户问题进来先结合最近几轮对话，改写成适合检索的查询。
+边界上只处理 role=USER 且带文本的消息，所以 HITL 恢复时那条工具结果消息不会被误改写；改写结果为空、或和原问题一样，就保留原消息不动，避免把内容改丢。
+
+第二个是意图识别（IntentRecognitionHook，优先级 60，也在 PreCallEvent）：判断这一轮该查个人知识库还是联网检索。
+优先级比改写大，是为了排在改写之后——它要拿改写后的查询去匹配关键词词表，「那个东西怎么配」这类带指代的问题才匹配得上。
+这个 Hook 和另外两个不一样：它带着 userId 和「用户是否强制指定路由」，所以我没做成单例 Bean，而是每次请求 new 一个。
+做单例就得用 ThreadLocal 或者可变字段，在响应式链路下会串台。
+判定结果同时走两条路：附一行【本轮路由】指令给模型，以及写进一个每请求一份的 RouteState，通过 ToolExecutionContext 共享给工具层，
+让 web_search 在路由为知识库时直接拒调。只注入提示词是不够的——ReAct 的模型有权自己选择工具。
+
+第三个是 HITL 拦截（UploadApprovalHook，PostReasoningEvent）：扫到敏感工具就 stopAgent。
+时机是关键：PostReasoning 时模型刚产出 tool call、还没执行，拦住既不会执行、也不会被算成失败；挂 PreActingEvent 就晚了，那时工具已经进入执行阶段。
+这个 Hook 只负责「停下」，挂起落库和审批后的恢复分别在 ChatService 和 HitlService 里做——Hook 拿不到 session 上下文，这两件事塞进去反而难写。
+
+框架自带的几个 Hook 也要知道：
+SkillHook 负责把 skill 的索引（名称+描述）注入提示词，正文仍然靠工具按需加载，这是渐进式披露；
+PendingToolRecoveryHook 不是恢复机制而是兜底清理，它会扫出没有结果的 tool call 自动填一个 error 结果，
+所以 HITL 恢复必须先注入自己的 ToolResultBlock，否则挂起的上传会被当成孤儿调用、直接判失败；
+StructuredOutputHook 是框架做 agent 级结构化输出的实现（走临时 generate_response 工具 + tool_choice），我没有用它——
+它面向「整个 Agent 的最终输出」，而我只是要在 Hook 里做一次分类调用，套上去太重，我的结构化输出是提示词约束 + 容错 JSON 解析；
+另外还有 StreamingHook（流式事件分发）和 JsonlTraceExporter（把 trace 落成 JSONL，接可观测性用）。
+```
+
+**三个自建 Hook 的分工**
+
+| Hook | 优先级 | 挂的事件 | 做什么 | 设计要点 |
+|---|---|---|---|---|
+| `QueryRewriteHook` | 50 | `PreCallEvent` | 结合历史把问题改写成检索查询 | 必须每轮跑，不能交给模型决定；只处理 USER 文本消息 |
+| `IntentRecognitionHook` | 60 | `PreCallEvent` | 结构化意图识别 + 词表匹配，决定知识库还是联网 | 每请求一个实例（带 userId / 强制路由）；结果同时给模型和工具层 |
+| `UploadApprovalHook` | 100 | `PostReasoningEvent` | 敏感工具挂起等人工审批 | 此刻 tool call 尚未执行，拦下不算失败；只负责停，落库与恢复在外层 |
+
+**事件清单：Hook 到底能拦什么**
+
+| 事件 | 可做的事 | 典型用途 |
+|---|---|---|
+| `PreCallEvent` | `setInputMessages` | 一轮调用的入口：查询改写、意图识别 |
+| `PreReasoningEvent` | `setInputMessages` / `setGenerateOptions` | 每轮推理前改上下文、改生成参数 |
+| `PostReasoningEvent` | `setReasoningMessage` / `stopAgent` | 模型产出 tool call 后、执行前：HITL 拦截 |
+| `PreActingEvent` | `setToolUse` | 工具即将执行：改/补入参（注入鉴权、修正参数） |
+| `PostActingEvent` | `setToolResult` / `setToolResultMsg` / `stopAgent` | 工具执行完：改写结果、脱敏 |
+| `PostCallEvent` | `setFinalMessage` | 一轮结束前改最终回答 |
+| `PreSummaryEvent` / `PostSummaryEvent` | `setInputMessages` / `setSummaryMessage` | 记忆压缩前后（对应 AutoContextMemory 的压缩调用） |
+| `ReasoningChunkEvent` / `ActingChunkEvent` / `ErrorEvent` | 只读 | 流式输出、错误上报、埋点 |
+
+优先级约定：**数值越小越先执行**，默认 100；框架建议 51~100 放校验与预处理、101~500 放业务逻辑、501~1000 放日志与埋点。本项目的三个 Hook 分别是 50 / 60 / 100。
 
 ### HITL 人工审批（挂起与恢复）
 
@@ -343,4 +533,6 @@ public String uploadDocument(
 还有个坑：ToolRegistration 内部只有一个工具字段，链式 .tool(a).tool(b) 会互相覆盖，最后只有最后一个生效。这类问题都属于静默失败，所以我把它们做成了可复跑的探针测试：一个直接打模型看原始返回，一个按线上方式装配 agent 跑一遍，配合启动日志里逐个打印的 Registered tool 确认工具是否齐全。
 
 对话返回用 SSE 流式，用 Flux.create 拿 sink、订阅 AgentScope 的事件流逐段推。事件体用一行 JSON 而不是裸文本，因为裸文本里带换行会把 SSE 的 data 帧拆断、前端按行解析会丢内容。事件分成三类：思考过程只做「正在思考」提示，工具结果（含失败原因）直接展示便于排查，最终回答才是用户要看的内容——我一开始只订阅了思考事件，结果用户看到的全是模型的内心独白。
+
+工具执行中的进度用框架注入的 ToolEmitter 上报：工具方法多声明一个 ToolEmitter 参数就能 emit 中间片段，这些片段只进 Hook 和流式事件、不进模型上下文，只有返回值才交给模型。到了 ChatService 再按事件的 isLast 分流——中间片段 isLast=false 当进度提示，工具返回的那条 isLast=true 才留在工具结果区。同一件事本来可以「往 ToolExecutionContext 里塞一个 sink」，但那样非流式路径和审批恢复路径都没有 sink，还得处理多线程写 sink 破坏 SSE 帧的问题，框架这条路把这两样都避开了。
 ```

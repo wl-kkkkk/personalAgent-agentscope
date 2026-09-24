@@ -27,14 +27,16 @@ description: 当用户问的是实时资讯、外部网站信息、最新数据�
 ```
 
 4. **确认落盘位置**：默认直接用系统提示词里的「默认保存目录」；只有用户明确说要存到别处（如桌面）时才换成用户给的那个目录，不要反过来追问用户想存哪里。
-5. **写入文档**：调用 `write_markdown(title="标题", content="整理好的正文", outputDir="用户指定的目录绝对路径")`。注意 outputDir 必须是目录路径，不是文件路径。
-6. **提炼关键词**：调用 `extract_keywords`，把关键词沉淀下来供后续识别同类内容。
-7. **请求上传**：确认内容没问题后调用 `upload_document(title="标题", markdownContent="正文内容")` 上传到个人知识库。**必须直接传文本内容，不要传 file_path**。这一步会触发人工审批，等审批结果即可。
+5. **提炼关键词**：先调 `extract_keywords(text="整理好的正文")`。它返回 JSON，其中 `candidates` 是候选词、`existing` 是你词表里已经有的、`new` 是需要新增的、`keywordsText` 是拼好的顿号串。
+6. **写入文档**：调用 `write_markdown(title="标题", content="整理好的正文", outputDir="用户指定的目录绝对路径", keywords=上一步的 keywordsText)`。注意 outputDir 必须是目录路径，不是文件路径。
+7. **请求上传**：确认内容没问题后调用 `upload_document(title="标题", markdownContent="正文内容", keywords=上一步的 keywordsText)` 上传到个人知识库。**必须直接传文本内容，不要传 file_path**。这一步会触发人工审批，用户会在审批卡片上勾选决定哪些关键词写进词表，等审批结果即可。
 
 **执行规则：**
 
 - `key_points` 至少 3 条；`sources` 不能为空；`keyword` 要能代表该主题。
 - 整理完先自查一遍格式，字段不齐就先补；补不了的写进 `missing`。
+- 关键词只在准备沉淀文档时提炼，闲聊或单纯问答不用提炼。
+- `extract_keywords` 返回的是候选词，**不代表已经写进词表**：最终是否新增由用户在审批卡片上决定，不要跟用户说"已加入词表"。
 - 查阅不到有效信息时，不要编造，如实告诉用户查不到。
 - **联网搜索返回了"失败"或"不可用"类提示时**：如实告诉用户搜索服务暂时不可用，不要尝试用 knowledge-base-qa 或其他工具代替，也不要编造搜索结果。建议用户稍后重试。
 - 上传被拒绝时，只回答内容即可，不要反复重试上传。
@@ -47,7 +49,7 @@ description: 当用户问的是实时资讯、外部网站信息、最新数据�
 输入：帮我查一下最近大模型在代码补全上的进展，整理成文档存到我桌面上
 自动改写：`帮我查一下最近大模型在代码补全上的进展，整理成文档存到我桌面上` → `大模型代码补全最新进展 文档`
 执行：`web_search("大模型代码补全最新进展")`
-      `write_markdown(title="大模型代码补全进展", content="（按上表整理后的正文）", outputDir="C:/Users/xxx/Desktop")`
-      `extract_keywords("（正文）")`
-      `upload_document(title="大模型代码补全进展", markdownContent="（正文）")` → 触发人工审批
-输出：已整理成文档并保存到桌面，已提交上传知识库，等待人工确认。
+      `extract_keywords("（按上表整理后的正文）")` → {"candidates":["大模型","代码补全"],"existing":["大模型"],"new":["代码补全"],"keywordsText":"大模型、代码补全"}
+      `write_markdown(title="大模型代码补全进展", content="（正文）", outputDir="C:/Users/xxx/Desktop", keywords="大模型、代码补全")`
+      `upload_document(title="大模型代码补全进展", markdownContent="（正文）", keywords="大模型、代码补全")` → 触发人工审批
+输出：已整理成文档并保存到桌面，已提交上传知识库，等待人工确认（关键词也会一并请你确认）。

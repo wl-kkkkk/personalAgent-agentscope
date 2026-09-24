@@ -30,7 +30,7 @@ public class SkillCatalog {
 
     /** skill 名称 → 该 skill 需要用到的工具名 */
     private static final Map<String, List<String>> TOOLS_BY_SKILL = Map.of(
-            "knowledge-base-qa", List.of("rewrite_query", "answerByPersonalKnowledge"),
+            "knowledge-base-qa", List.of("rewrite_query", "query_personal_knowledge"),
             "web-knowledge-capture", List.of("web_search", "extract_keywords",
                     "write_markdown", "upload_document"));
 

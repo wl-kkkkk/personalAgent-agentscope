@@ -21,13 +21,13 @@ class DocumentToolsDirTest {
         Path userFolder = Files.createTempDirectory("user-md-dir");
         Path modelPassedDir = Files.createTempDirectory("model-passed-dir");
         Path fallbackFolder = Files.createTempDirectory("server-default-dir");
-        DocumentTools tools = new DocumentTools(fallbackFolder.toString(), null, null);
+        DocumentTools tools = new DocumentTools(fallbackFolder.toString());
 
         ToolExecutionContext context = ToolExecutionContext.builder()
                 .register(DocumentTools.ROOT_FOLDER_KEY, userFolder.toString())
                 .build();
 
-        String path = tools.writeMarkdown("测试标题", "# 正文内容", modelPassedDir.toString(), context);
+        String path = tools.writeMarkdown("测试标题", "# 正文内容", modelPassedDir.toString(), null, context);
 
         assertThat(Path.of(path)).exists();
         assertThat(path).startsWith(userFolder.toRealPath().toString());
@@ -38,13 +38,13 @@ class DocumentToolsDirTest {
     void fallsBackToUserFolderFromContext() throws Exception {
         Path userFolder = Files.createTempDirectory("user-md-dir-2");
         Path fallbackFolder = Files.createTempDirectory("server-default-dir-2");
-        DocumentTools tools = new DocumentTools(fallbackFolder.toString(), null, null);
+        DocumentTools tools = new DocumentTools(fallbackFolder.toString());
 
         ToolExecutionContext context = ToolExecutionContext.builder()
                 .register(DocumentTools.ROOT_FOLDER_KEY, userFolder.toString())
                 .build();
 
-        String path = tools.writeMarkdown("测试标题", "# 正文内容", null, context);
+        String path = tools.writeMarkdown("测试标题", "# 正文内容", null, null, context);
 
         assertThat(Path.of(path)).exists();
         assertThat(path).startsWith(userFolder.toRealPath().toString());
@@ -55,13 +55,13 @@ class DocumentToolsDirTest {
     void outputDirUsedWhenContextIsEmpty() throws Exception {
         Path explicitFolder = Files.createTempDirectory("explicit-md-dir");
         Path fallbackFolder = Files.createTempDirectory("server-default-dir-3");
-        DocumentTools tools = new DocumentTools(fallbackFolder.toString(), null, null);
+        DocumentTools tools = new DocumentTools(fallbackFolder.toString());
 
         ToolExecutionContext context = ToolExecutionContext.builder()
                 .register(DocumentTools.ROOT_FOLDER_KEY, "")
                 .build();
 
-        String path = tools.writeMarkdown("测试标题", "# 正文内容", explicitFolder.toString(), context);
+        String path = tools.writeMarkdown("测试标题", "# 正文内容", explicitFolder.toString(), null, context);
 
         assertThat(path).startsWith(explicitFolder.toRealPath().toString());
     }

@@ -4,6 +4,7 @@ import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.model.ChatResponse;
+import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +34,15 @@ public class ModelCaller {
      * @return 模型输出的文本；无内容时返回空串（不返回 null）
      */
     public String call(Model model, String prompt) {
+        return call(model, prompt, null);
+    }
+
+    /**
+     * 带生成参数的调用，参数为 null 时用模型自身的默认值。
+     *
+     * @param options 每次调用的生成参数（温度、response_format 等），可为 null
+     */
+    public String call(Model model, String prompt, GenerateOptions options) {
         if (model == null) {
             throw new IllegalArgumentException("模型不能为 null");
         }
@@ -42,7 +52,7 @@ public class ModelCaller {
         String modelName = model.getModelName();
         try {
             Msg message = Msg.builder().role(MsgRole.USER).textContent(prompt).build();
-            List<ChatResponse> responses = model.stream(List.of(message), List.of(), null)
+            List<ChatResponse> responses = model.stream(List.of(message), List.of(), options)
                     .collectList()
                     .block(TIMEOUT);
             if (responses == null || responses.isEmpty()) {

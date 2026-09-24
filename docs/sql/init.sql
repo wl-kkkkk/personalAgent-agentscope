@@ -5,6 +5,7 @@
 --   user_info           用户表（结构对齐 personalrag.user_info，额外加了 root_folder）
 --   agent_markdown_file Markdown 文件元信息：只存路径与大小等信息，正文在本地文件里
 --   agent_hitl_task     人工审批（HITL）任务表
+--   agent_keyword       关键词词表（每个用户一张，意图识别用它把问题映射到已有主题）
 --
 -- 不在这里建的表：
 --   （无）—— agentscope_sessions 也列在下面，方便你统一管理；
@@ -142,6 +143,32 @@ CREATE TABLE IF NOT EXISTS `agent_hitl_task`
   COLLATE = utf8mb4_general_ci COMMENT ='人工审批（HITL）任务';
 
 -- ----------------------------------------------------------------------------
+-- 关键词词表
+--
+-- 每个用户一张词表，是全系统"知识库覆盖了哪些主题"的权威副本：
+--   查询侧：意图识别把用户问题映射到词表里的关键词，决定走知识库还是联网；
+--   入库侧：新文档提炼出的关键词与词表对比，由用户确认哪些是新增。
+--
+-- normalized 是 NFKC + 小写 + 去空白后的结果（见 Keywords.normalize）：
+-- "RAG" / "rag" / "ＲＡＧ" 归一化后相同，靠唯一键挡住重复写法，
+-- 也保证查询侧匹配时不会因为大小写不同而漏掉。
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `agent_keyword`
+(
+    id         BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    user_id    VARCHAR(64) NOT NULL COMMENT '所属用户ID（user_info.id）',
+    keyword    VARCHAR(64) NOT NULL COMMENT '关键词展示形式（保留用户/模型给的写法）',
+    normalized VARCHAR(64) NOT NULL COMMENT '归一化形式（NFKC+小写+去空白），用于去重与匹配',
+    source     VARCHAR(32) NOT NULL DEFAULT 'manual' COMMENT '来源：manual-手工添加 / upload-入库沉淀（后续接 HITL 用）',
+    created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_normalized` (`user_id`, `normalized`),
+    KEY `idx_user` (`user_id`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT ='关键词词表';
+
+-- ----------------------------------------------------------------------------
 -- 执行后自查
 -- ----------------------------------------------------------------------------
 -- SHOW TABLES;
@@ -149,6 +176,7 @@ CREATE TABLE IF NOT EXISTS `agent_hitl_task`
 -- SELECT id, phone, nickname, root_folder FROM user_info;
 -- SELECT task_id, user_id, session_id, tool_name, status, created_at
 --   FROM agent_hitl_task ORDER BY created_at DESC LIMIT 10;
+-- SELECT user_id, keyword, normalized, source FROM agent_keyword ORDER BY user_id, id;
 --
 -- 过期未审批任务清理（后续做 TTL 时用）：
 --   DELETE FROM agent_hitl_task

@@ -4,8 +4,11 @@ package com.tyut.agentscope.web;
  * sessionId 首轮可以不传（服务端生成并返回），之后每轮都要把返回的 sessionId 带回来。
  *
  * <p>userId 可以由前端带上（方便调试、也让老版本调用方无感），但**服务端只以登录态为准**，
- * 只做一致性校验：传了就必须和当前登录用户一致，否则直接拒绝——
+ * 只做一致性校验：传了就必须和当前登录用户一致，否则直接拒绝—— 
  * 否则任何人都能拿别人的 userId 去查别人的知识库。
+ *
+ * <p>forceRoute 是用户在界面上强制指定的检索路径：{@code rag}（只查个人知识库）或
+ * {@code web}（只联网检索）。不传或传别的值表示"交给意图识别判断"。
  */
-public record AgentRequest(String userId, String sessionId, String query) {
+public record AgentRequest(String userId, String sessionId, String query, String forceRoute) {
 }

@@ -1,8 +1,12 @@
 package com.tyut.agentscope;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tyut.agentscope.common.JsonSupport;
 import com.tyut.agentscope.common.ModelCaller;
 import com.tyut.agentscope.common.PromptLoader;
+import com.tyut.agentscope.common.StructuredModelCaller;
 import com.tyut.agentscope.tool.DocumentTools;
+import com.tyut.agentscope.tool.KeywordTools;
 import com.tyut.agentscope.tool.QueryRewriteTools;
 import com.tyut.agentscope.tool.UploadTools;
 import com.tyut.agentscope.tool.WebSearchTools;
@@ -59,7 +63,11 @@ class AgentToolProbeTest {
         // 与线上保持一致：每个工具单独注册（链式调用只会保留最后一个）
         toolkit.registration().tool(new QueryRewriteTools(rewriteModel, modelCaller, promptLoader)).apply();
         toolkit.registration().tool(new WebSearchTools(searchModel, modelCaller)).apply();
-        toolkit.registration().tool(new DocumentTools("./knowledge/web", chatModel, modelCaller)).apply();
+        toolkit.registration().tool(new DocumentTools("./knowledge/web")).apply();
+        // 关键词工具（探针里不接词表，只为确认工具能注册上、schema 里参数是齐的）
+        toolkit.registration().tool(new KeywordTools(chatModel, promptLoader,
+                new StructuredModelCaller(modelCaller, new JsonSupport(new ObjectMapper()), false),
+                null, new ObjectMapper())).apply();
         toolkit.registration().tool(new UploadTools(null)).apply();
         System.out.println("=== toolkit 工具列表: " + toolkit.getToolNames());
         toolkit.getToolSchemas().forEach(s -> System.out.println("=== schema: " + s.getName()

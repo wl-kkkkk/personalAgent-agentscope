@@ -1,6 +1,8 @@
 package com.tyut.agentscope.config;
 
 import com.tyut.agentscope.tool.DocumentTools;
+import com.tyut.agentscope.tool.KeywordTools;
+import com.tyut.agentscope.tool.PersonalKnowledgeTools;
 import com.tyut.agentscope.tool.QueryRewriteTools;
 import com.tyut.agentscope.tool.UploadTools;
 import com.tyut.agentscope.tool.WebSearchTools;
@@ -176,7 +178,9 @@ public class AgentScopeConfig {
     @Bean
     public Toolkit toolkit(McpClientWrapper ragMcpClient,
                            WebSearchTools webSearchTools,
+                           PersonalKnowledgeTools personalKnowledgeTools,
                            DocumentTools documentTools,
+                           KeywordTools keywordTools,
                            UploadTools uploadTools,
                            QueryRewriteTools queryRewriteTools) {
         Toolkit toolkit = new Toolkit();
@@ -184,11 +188,17 @@ public class AgentScopeConfig {
         // 只有最后一个生效（表现为"工具莫名其妙不见了"）。必须逐个 apply()。
         toolkit.registration().tool(queryRewriteTools).apply();
         toolkit.registration().tool(webSearchTools).apply();
+        toolkit.registration().tool(personalKnowledgeTools).apply();
         toolkit.registration().tool(documentTools).apply();
+        toolkit.registration().tool(keywordTools).apply();
         toolkit.registration().tool(uploadTools).apply();
         toolkit.registration()
                 .mcpClient(ragMcpClient)
                 .apply();
+        // 知识库查询改由本地包装工具承担（只有这样它才用得上 ToolEmitter 报进度），
+        // 所以把 MCP 直连的那个摘掉——两个功能相同的工具同时存在，模型会随机挑一个，
+        // 挑中直连的就又看不到进度了。上传工具保留：它走 HITL 拦截，且 upload2Rag 留作兜底。
+        toolkit.removeTool("answerByPersonalKnowledge");
         log.info("基础 toolkit 注册完成, 可用工具: {}", toolkit.getToolNames());
         return toolkit;
     }
